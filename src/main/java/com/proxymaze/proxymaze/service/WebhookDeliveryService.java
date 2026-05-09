@@ -28,15 +28,12 @@ public class WebhookDeliveryService {
     private final DataStore store;
     private final ObjectMapper objectMapper;
     private final ScheduledExecutorService retryScheduler = Executors.newSingleThreadScheduledExecutor();
-
-    // One serialized executor per receiver preserves event ordering per destination.
     private final Map<String, ExecutorService> receiverExecutors = new ConcurrentHashMap<>();
 
     private final HttpClient httpClient = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(10))
         .build();
 
-    // Tracks successfully delivered keys to prevent duplicate deliveries on retry.
     private final Set<String> deliveredKeys = Collections.newSetFromMap(new ConcurrentHashMap<>());
 
     @Autowired
@@ -117,9 +114,10 @@ public class WebhookDeliveryService {
             if (code >= 200 && code < 300) {
                 deliveredKeys.add(deliveryKey);
                 store.incrementWebhookDeliveries();
-            } else {
+            } else if (code >= 500) {
                 scheduleRetry(url, payload, deliveryKey, start, attempt);
             }
+            // 4xx = permanent failure, do not retry
 
         } catch (Exception e) {
             scheduleRetry(url, payload, deliveryKey, start, attempt);
@@ -150,6 +148,8 @@ public class WebhookDeliveryService {
         return receiverExecutors.computeIfAbsent(receiverKey, key -> Executors.newSingleThreadExecutor());
     }
 
+    // Snapshot all values at build time — the payload map must not hold live references
+    // to mutable Alert state, because JSON serialization happens asynchronously.
     private Map<String, Object> buildFiredPayload(Alert alert) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("event", "alert.fired");
@@ -158,7 +158,7 @@ public class WebhookDeliveryService {
         payload.put("failure_rate", alert.getFailureRate());
         payload.put("total_proxies", alert.getTotalProxies());
         payload.put("failed_proxies", alert.getFailedProxies());
-        payload.put("failed_proxy_ids", alert.getFailedProxyIds());
+        payload.put("failed_proxy_ids", new ArrayList<>(alert.getFailedProxyIds()));
         payload.put("threshold", alert.getThreshold());
         payload.put("message", alert.getMessage());
         return payload;
@@ -175,7 +175,7 @@ public class WebhookDeliveryService {
         payload.put("failure_rate", alert.getFailureRate());
         payload.put("total_proxies", alert.getTotalProxies());
         payload.put("failed_proxies", alert.getFailedProxies());
-        payload.put("failed_proxy_ids", alert.getFailedProxyIds());
+        payload.put("failed_proxy_ids", new ArrayList<>(alert.getFailedProxyIds()));
         payload.put("threshold", alert.getThreshold());
         payload.put("message", alert.getMessage());
         return payload;
@@ -198,7 +198,7 @@ public class WebhookDeliveryService {
 
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("username", integration.getUsername() != null ? integration.getUsername() : "ProxyWatch");
-        payload.put("text", "🚨 *ALERT FIRED* — Proxy pool failure rate exceeded threshold!");
+        payload.put("text", "\uD83D\uDEA8 *ALERT FIRED* — Proxy pool failure rate exceeded threshold!");
         payload.put("attachments", List.of(attachment));
         return payload;
     }
@@ -221,7 +221,7 @@ public class WebhookDeliveryService {
 
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("username", integration.getUsername() != null ? integration.getUsername() : "ProxyWatch");
-        payload.put("text", "✅ *ALERT RESOLVED* — Proxy pool is healthy again.");
+        payload.put("text", "\u2705 *ALERT RESOLVED* — Proxy pool is healthy again.");
         payload.put("attachments", List.of(attachment));
         return payload;
     }
@@ -235,7 +235,7 @@ public class WebhookDeliveryService {
         fields.add(discordField("Failed IDs", String.join(", ", alert.getFailedProxyIds())));
 
         Map<String, Object> embed = new LinkedHashMap<>();
-        embed.put("title", "🚨 Alert Fired — Proxy Pool Degraded");
+        embed.put("title", "\uD83D\uDEA8 Alert Fired — Proxy Pool Degraded");
         embed.put("description", "Proxy pool failure rate has exceeded the threshold of " + alert.getThreshold() + ". Immediate attention required.");
         embed.put("color", 16711680);
         embed.put("fields", fields);
@@ -258,7 +258,7 @@ public class WebhookDeliveryService {
         fields.add(discordField("Failed IDs", alert.getFailedProxyIds().isEmpty() ? "none" : String.join(", ", alert.getFailedProxyIds())));
 
         Map<String, Object> embed = new LinkedHashMap<>();
-        embed.put("title", "✅ Alert Resolved — Proxy Pool Healthy");
+        embed.put("title", "\u2705 Alert Resolved — Proxy Pool Healthy");
         embed.put("description", "Proxy pool failure rate has dropped below threshold. System is healthy.");
         embed.put("color", 65280);
         embed.put("fields", fields);
