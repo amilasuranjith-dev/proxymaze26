@@ -3,7 +3,7 @@ package com.proxymaze.proxymaze.model;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Getter;
 import java.time.Instant;
-import java.util.Collections;
+import java.util.ArrayList;
 import java.util.List;
 
 @Getter
@@ -25,10 +25,10 @@ public class Alert {
     @JsonProperty("failed_proxies")
     private volatile int failedProxies;
 
-    // IMMUTABLE fire-time snapshot — never mutated after construction.
-    // Per spec: "the exact set of failed_proxy_ids that were down at the time of firing."
+    // Live failed proxy IDs — updated on every check cycle during an active breach.
+    // Spec: GET /alerts, GET /proxies, and active-breach webhooks must agree on the current failed set.
     @JsonProperty("failed_proxy_ids")
-    private final List<String> failedProxyIds;
+    private volatile List<String> failedProxyIds;
 
     @JsonProperty("threshold")
     private final double threshold = 0.2;
@@ -49,23 +49,16 @@ public class Alert {
         this.failureRate = failureRate;
         this.totalProxies = totalProxies;
         this.failedProxies = failedProxies;
-        // Defensive immutable copy — this list is NEVER changed after this point
-        this.failedProxyIds = Collections.unmodifiableList(List.copyOf(failedProxyIds));
+        this.failedProxyIds = new ArrayList<>(failedProxyIds);
         this.firedAt = firedAt;
         this.resolvedAt = null;
         this.message = buildMessage(failedProxies, totalProxies, failureRate);
     }
 
-    /**
-     * Updates live metrics (failure_rate, failed_proxies) for the duration of an
-     * ongoing breach, so GET /proxies and GET /alerts show current health.
-     * <p>
-     * failed_proxy_ids is intentionally NOT updated here — the spec mandates it
-     * must represent the exact set of proxies that were down at the time of firing.
-     */
-    public synchronized void updateActiveState(double newRate, int failed) {
+    public synchronized void updateActiveState(double newRate, int failed, List<String> failedIds) {
         this.failureRate = newRate;
         this.failedProxies = failed;
+        this.failedProxyIds = new ArrayList<>(failedIds);
         this.message = buildMessage(failed, this.totalProxies, newRate);
     }
 
