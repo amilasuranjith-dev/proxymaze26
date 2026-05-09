@@ -45,14 +45,12 @@ public class AlertService {
             }
         } else {
             if (failureRate < THRESHOLD) {
-                activeAlert.updateActiveState(failureRate, downCount);
+                activeAlert.updateActiveState(failureRate, downCount, downIds);
                 activeAlert.resolve(Instant.now());
                 store.setActiveAlert(null);
                 webhookDeliveryService.deliverAlertResolved(activeAlert);
             } else {
-                // Still breaching — update live metrics (rate, count) on the active alert.
-                // failed_proxy_ids is NOT updated: it remains frozen as the fire-time snapshot.
-                activeAlert.updateActiveState(failureRate, downCount);
+                activeAlert.updateActiveState(failureRate, downCount, downIds);
             }
         }
     }
