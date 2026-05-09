@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.ArrayList;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 @Service
 public class MonitoringService {
@@ -35,6 +36,8 @@ public class MonitoringService {
     // reschedule
     private volatile ScheduledFuture<?> currentTask;
     private final AtomicBoolean cycleRunning = new AtomicBoolean(false);
+    private final AtomicBoolean immediateCheckQueued = new AtomicBoolean(false);
+    private final AtomicLong cycleCounter = new AtomicLong(0);
 
     // Connect timeout is kept short so the per-request timeout governs total probe duration.
     private final HttpClient httpClient = HttpClient.newBuilder()
@@ -75,7 +78,15 @@ public class MonitoringService {
 
     // Trigger an immediate check cycle (used when new proxies are added).
     public void triggerImmediateCheck() {
-        probePool.submit(this::runCheckCycle);
+        requestImmediateCheck();
+    }
+
+    // Trigger an immediate check cycle and wait for at least one cycle to finish.
+    public boolean triggerImmediateCheckAndWait() {
+        int timeoutMs = store.getConfig().getRequestTimeoutMs();
+        int proxyCount = Math.max(1, store.getPoolSize());
+        long maxWaitMs = Math.max(1000L, (long) timeoutMs * proxyCount + 500L);
+        return triggerImmediateCheckAndWait(Duration.ofMillis(maxWaitMs));
     }
 
     // One complete monitoring pass: probe all proxies, then evaluate alerts.
@@ -111,8 +122,38 @@ public class MonitoringService {
             System.err.println("MonitoringService cycle error: " + e.getMessage());
             e.printStackTrace();
         } finally {
+            cycleCounter.incrementAndGet();
             cycleRunning.set(false);
+            if (immediateCheckQueued.getAndSet(false)) {
+                probePool.submit(this::runCheckCycle);
+            }
         }
+    }
+
+    private void requestImmediateCheck() {
+        if (cycleRunning.get()) {
+            immediateCheckQueued.set(true);
+            return;
+        }
+        probePool.submit(this::runCheckCycle);
+    }
+
+    private boolean triggerImmediateCheckAndWait(Duration timeout) {
+        long target = cycleCounter.get() + 1;
+        requestImmediateCheck();
+        long deadline = System.nanoTime() + timeout.toNanos();
+        while (System.nanoTime() < deadline) {
+            if (cycleCounter.get() >= target) {
+                return true;
+            }
+            try {
+                Thread.sleep(25);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        return cycleCounter.get() >= target;
     }
 
     private String probeProxy(String url, int timeoutMs) {
