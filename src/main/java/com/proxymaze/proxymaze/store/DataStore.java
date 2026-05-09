@@ -25,6 +25,7 @@ public class DataStore {
     private final AtomicLong totalChecks       = new AtomicLong(0);
     private final AtomicLong totalAlerts       = new AtomicLong(0);
     private final AtomicLong webhookDeliveries = new AtomicLong(0);
+    private final AtomicLong alertSequence     = new AtomicLong(0);
 
     public MonitoringConfigData getConfig() { return config; }
 
@@ -124,4 +125,7 @@ public class DataStore {
     public long getTotalAlerts()       { return totalAlerts.get(); }
     public long getWebhookDeliveries() { return webhookDeliveries.get(); }
     public int getActiveAlertsCount()  { return activeAlert != null ? 1 : 0; }
+    public String nextAlertId() {
+        return "alert-" + alertSequence.incrementAndGet();
+    }
 }

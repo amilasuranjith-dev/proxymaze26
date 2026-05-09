@@ -37,7 +37,7 @@ public class AlertService {
 
         if (activeAlert == null) {
             if (failureRate >= THRESHOLD) {
-                String alertId = "alert-" + UUID.randomUUID().toString().substring(0, 8);
+                String alertId = store.nextAlertId();
                 Alert newAlert = new Alert(alertId, failureRate, totalProxies, downCount, downIds, Instant.now());
                 store.addAlert(newAlert);
                 store.setActiveAlert(newAlert);
@@ -45,6 +45,7 @@ public class AlertService {
             }
         } else {
             if (failureRate < THRESHOLD) {
+                activeAlert.updateActiveState(failureRate, downCount);
                 activeAlert.resolve(Instant.now());
                 store.setActiveAlert(null);
                 webhookDeliveryService.deliverAlertResolved(activeAlert);
