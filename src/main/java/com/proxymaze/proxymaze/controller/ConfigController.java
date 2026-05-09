@@ -22,18 +22,13 @@ public class ConfigController {
         this.monitoringService = monitoringService;
     }
 
-    //monitoring interval and timeout
     @PostMapping("/config")
     public ResponseEntity<Map<String, Object>> setConfig(@RequestBody ConfigRequest request) {
         store.updateConfig(request.getCheckIntervalSeconds(), request.getRequestTimeoutMs());
-
-        // Reschedule the monitoring loop with the new interval
         monitoringService.reschedule(request.getCheckIntervalSeconds());
-
         return ResponseEntity.ok(buildConfigResponse());
     }
 
-    //Return current configuration.
     @GetMapping("/config")
     public ResponseEntity<Map<String, Object>> getConfig() {
         return ResponseEntity.ok(buildConfigResponse());
@@ -47,4 +42,3 @@ public class ConfigController {
         return body;
     }
 }
-
