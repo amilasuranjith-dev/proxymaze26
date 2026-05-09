@@ -69,9 +69,9 @@ public class MonitoringService {
         if (currentTask != null && !currentTask.isDone()) {
             currentTask.cancel(false);
         }
-        currentTask = scheduler.scheduleAtFixedRate(
+        currentTask = scheduler.scheduleWithFixedDelay(
                 this::runCheckCycle,
-                0, // start immediately
+                0,
                 intervalSeconds,
                 TimeUnit.SECONDS);
     }

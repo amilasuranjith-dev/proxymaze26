@@ -103,6 +103,8 @@ public class ProxyController {
         m.put("status", p.getStatus());
         m.put("last_checked_at", p.getLastCheckedAt() != null ? formatInstant(p.getLastCheckedAt()) : null);
         m.put("consecutive_failures", p.getConsecutiveFailures());
+        m.put("total_checks", p.getTotalChecks());
+        m.put("uptime_percentage", p.getUptimePercentage());
         return m;
     }
 

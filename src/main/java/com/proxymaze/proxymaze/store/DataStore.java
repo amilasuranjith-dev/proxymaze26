@@ -7,6 +7,7 @@ import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
+import java.util.UUID;
 
 @Component
 public class DataStore {
@@ -25,7 +26,6 @@ public class DataStore {
     private final AtomicLong totalChecks       = new AtomicLong(0);
     private final AtomicLong totalAlerts       = new AtomicLong(0);
     private final AtomicLong webhookDeliveries = new AtomicLong(0);
-    private final AtomicLong alertSequence     = new AtomicLong(0);
 
     public MonitoringConfigData getConfig() { return config; }
 
@@ -126,6 +126,6 @@ public class DataStore {
     public long getWebhookDeliveries() { return webhookDeliveries.get(); }
     public int getActiveAlertsCount()  { return activeAlert != null ? 1 : 0; }
     public String nextAlertId() {
-        return "alert-" + alertSequence.incrementAndGet();
+        return "alert-" + UUID.randomUUID().toString().substring(0, 8);
     }
 }
