@@ -3,7 +3,7 @@ package com.proxymaze.proxymaze.model;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Getter;
 import java.time.Instant;
-import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 @Getter
@@ -14,17 +14,21 @@ public class Alert {
     @JsonProperty("status")
     private volatile String status;   // "active" or "resolved"
 
+    // Live failure_rate — updated on each cycle while the alert is active
     @JsonProperty("failure_rate")
     private volatile double failureRate;
 
     @JsonProperty("total_proxies")
     private final int totalProxies;
 
+    // Live count of currently-down proxies — updated on each cycle while active
     @JsonProperty("failed_proxies")
     private volatile int failedProxies;
 
+    // IMMUTABLE fire-time snapshot — never mutated after construction.
+    // Per spec: "the exact set of failed_proxy_ids that were down at the time of firing."
     @JsonProperty("failed_proxy_ids")
-    private volatile List<String> failedProxyIds;
+    private final List<String> failedProxyIds;
 
     @JsonProperty("threshold")
     private final double threshold = 0.2;
@@ -45,23 +49,27 @@ public class Alert {
         this.failureRate = failureRate;
         this.totalProxies = totalProxies;
         this.failedProxies = failedProxies;
-        this.failedProxyIds = new ArrayList<>(failedProxyIds);
+        // Defensive immutable copy — this list is NEVER changed after this point
+        this.failedProxyIds = Collections.unmodifiableList(List.copyOf(failedProxyIds));
         this.firedAt = firedAt;
         this.resolvedAt = null;
         this.message = buildMessage(failedProxies, totalProxies, failureRate);
     }
 
-    //Update the active alert to reflect current down state during ongoing breach.
-    //Keep total_proxies as the fire-time snapshot per spec.
-    public synchronized void updateActiveState(double newRate,
-                                               int failed, List<String> failedIds) {
+    /**
+     * Updates live metrics (failure_rate, failed_proxies) for the duration of an
+     * ongoing breach, so GET /proxies and GET /alerts show current health.
+     * <p>
+     * failed_proxy_ids is intentionally NOT updated here — the spec mandates it
+     * must represent the exact set of proxies that were down at the time of firing.
+     */
+    public synchronized void updateActiveState(double newRate, int failed) {
         this.failureRate = newRate;
         this.failedProxies = failed;
-        this.failedProxyIds = new ArrayList<>(failedIds);
         this.message = buildMessage(failed, this.totalProxies, newRate);
     }
 
-    //Resolve the alert when failure rate drops below threshold.
+    /** Resolve the alert when failure rate drops below threshold. */
     public synchronized void resolve(Instant resolvedAt) {
         this.status = "resolved";
         this.resolvedAt = resolvedAt;

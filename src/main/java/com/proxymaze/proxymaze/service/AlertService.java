@@ -70,9 +70,9 @@ public class AlertService {
                 webhookDeliveryService.deliverAlertResolved(activeAlert);
 
             } else {
-                // Still breaching — update the active alert to reflect CURRENT state
-                // This satisfies the rule: GET /proxies, GET /alerts, webhook must agree
-                activeAlert.updateActiveState(failureRate, downCount, downIds);
+                // Still breaching — update live metrics (rate, count) on the active alert.
+                // failed_proxy_ids is NOT updated: it remains frozen as the fire-time snapshot.
+                activeAlert.updateActiveState(failureRate, downCount);
             }
         }
     }
