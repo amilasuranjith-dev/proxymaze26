@@ -18,7 +18,7 @@ public class Alert {
     private volatile double failureRate;
 
     @JsonProperty("total_proxies")
-    private volatile int totalProxies;
+    private final int totalProxies;
 
     @JsonProperty("failed_proxies")
     private volatile int failedProxies;
@@ -48,17 +48,17 @@ public class Alert {
         this.failedProxyIds = new ArrayList<>(failedProxyIds);
         this.firedAt = firedAt;
         this.resolvedAt = null;
-        this.message = "Proxy pool failure rate exceeded threshold";
+        this.message = buildMessage(failedProxies, totalProxies, failureRate);
     }
 
     //Update the active alert to reflect current down state during ongoing breach.
-    //This ensures GET /proxies, GET /alerts, and webhook payloads all agree on metrics.
-    public synchronized void updateActiveState(double newRate, int total,
+    //Keep total_proxies as the fire-time snapshot per spec.
+    public synchronized void updateActiveState(double newRate,
                                                int failed, List<String> failedIds) {
         this.failureRate = newRate;
-        this.totalProxies = total;
         this.failedProxies = failed;
         this.failedProxyIds = new ArrayList<>(failedIds);
+        this.message = buildMessage(failed, this.totalProxies, newRate);
     }
 
     //Resolve the alert when failure rate drops below threshold.
@@ -66,5 +66,10 @@ public class Alert {
         this.status = "resolved";
         this.resolvedAt = resolvedAt;
     }
-}
 
+    private String buildMessage(int failed, int total, double rate) {
+        double pct = rate * 100.0;
+        return String.format("Proxy pool failure rate exceeded threshold: %d/%d down (%.1f%%)",
+            failed, total, pct);
+    }
+}

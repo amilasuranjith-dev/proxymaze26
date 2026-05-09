@@ -15,6 +15,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.*;
 
@@ -22,11 +23,16 @@ import java.util.concurrent.*;
 @Service
 public class WebhookDeliveryService {
 
+    private static final DateTimeFormatter ISO_INSTANT = DateTimeFormatter.ISO_INSTANT;
+    private static final long DELIVERY_DEADLINE_SECONDS = 60;
+
     private final DataStore store;
     private final ObjectMapper objectMapper;
-    private final ExecutorService deliveryPool = Executors.newCachedThreadPool();
     private final ScheduledExecutorService retryScheduler =
         Executors.newSingleThreadScheduledExecutor();
+
+    // Serialize deliveries per receiver to preserve event ordering
+    private final Map<String, ExecutorService> receiverExecutors = new ConcurrentHashMap<>();
 
     private final HttpClient httpClient = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(10))
@@ -44,7 +50,9 @@ public class WebhookDeliveryService {
 
     @PreDestroy
     public void shutdown() {
-        deliveryPool.shutdown();
+        for (ExecutorService executor : receiverExecutors.values()) {
+            executor.shutdown();
+        }
         retryScheduler.shutdown();
     }
 
@@ -57,26 +65,22 @@ public class WebhookDeliveryService {
 
         // Generic webhooks
         for (WebhookRegistration wh : store.getAllWebhooks()) {
+            String receiverKey = "wh:" + wh.getWebhookId();
             String key = alert.getAlertId() + ":fired:" + wh.getWebhookId();
-            deliveryPool.submit(() ->
-                deliverWithRetry(wh.getUrl(), payload, key, 0)
-            );
+            enqueueDelivery(receiverKey, wh.getUrl(), payload, key);
         }
 
         // Slack/Discord integrations
         for (Integration integration : store.getAllIntegrations()) {
             if (integration.getEvents().contains("alert.fired")) {
+                String receiverKey = "int:" + integration.getIntegrationId();
                 String key = alert.getAlertId() + ":fired:integration:" + integration.getIntegrationId();
                 if ("slack".equals(integration.getType())) {
                     Map<String, Object> slackPayload = buildSlackFiredPayload(alert, integration);
-                    deliveryPool.submit(() ->
-                        deliverWithRetry(integration.getWebhookUrl(), slackPayload, key, 0)
-                    );
+                    enqueueDelivery(receiverKey, integration.getWebhookUrl(), slackPayload, key);
                 } else if ("discord".equals(integration.getType())) {
                     Map<String, Object> discordPayload = buildDiscordFiredPayload(alert);
-                    deliveryPool.submit(() ->
-                        deliverWithRetry(integration.getWebhookUrl(), discordPayload, key, 0)
-                    );
+                    enqueueDelivery(receiverKey, integration.getWebhookUrl(), discordPayload, key);
                 }
             }
         }
@@ -91,29 +95,33 @@ public class WebhookDeliveryService {
 
         // Generic webhooks
         for (WebhookRegistration wh : store.getAllWebhooks()) {
+            String receiverKey = "wh:" + wh.getWebhookId();
             String key = alert.getAlertId() + ":resolved:" + wh.getWebhookId();
-            deliveryPool.submit(() ->
-                deliverWithRetry(wh.getUrl(), payload, key, 0)
-            );
+            enqueueDelivery(receiverKey, wh.getUrl(), payload, key);
         }
 
         // Slack/Discord integrations
         for (Integration integration : store.getAllIntegrations()) {
             if (integration.getEvents().contains("alert.resolved")) {
+                String receiverKey = "int:" + integration.getIntegrationId();
                 String key = alert.getAlertId() + ":resolved:integration:" + integration.getIntegrationId();
                 if ("slack".equals(integration.getType())) {
                     Map<String, Object> slackPayload = buildSlackResolvedPayload(alert, integration);
-                    deliveryPool.submit(() ->
-                        deliverWithRetry(integration.getWebhookUrl(), slackPayload, key, 0)
-                    );
+                    enqueueDelivery(receiverKey, integration.getWebhookUrl(), slackPayload, key);
                 } else if ("discord".equals(integration.getType())) {
                     Map<String, Object> discordPayload = buildDiscordResolvedPayload(alert);
-                    deliveryPool.submit(() ->
-                        deliverWithRetry(integration.getWebhookUrl(), discordPayload, key, 0)
-                    );
+                    enqueueDelivery(receiverKey, integration.getWebhookUrl(), discordPayload, key);
                 }
             }
         }
+    }
+
+    private void enqueueDelivery(String receiverKey, String url, Map<String, Object> payload,
+                                 String deliveryKey) {
+        Instant start = Instant.now();
+        getReceiverExecutor(receiverKey).submit(() ->
+            deliverWithRetry(url, payload, deliveryKey, start, 0)
+        );
     }
 
     // ---------------------------------------------------------------
@@ -121,9 +129,13 @@ public class WebhookDeliveryService {
     // ---------------------------------------------------------------
 
     private void deliverWithRetry(String url, Map<String, Object> payload,
-                                   String deliveryKey, int attempt) {
+                                   String deliveryKey, Instant start, int attempt) {
         // Already successfully delivered — stop
         if (deliveredKeys.contains(deliveryKey)) return;
+
+        if (isDeadlineExceeded(start)) {
+            return;
+        }
 
         try {
             String json = objectMapper.writeValueAsString(payload);
@@ -147,26 +159,45 @@ public class WebhookDeliveryService {
 
             } else if (code == 500 || code == 502 || code == 503 || code == 504) {
                 // Transient failure — schedule retry with backoff
-                scheduleRetry(url, payload, deliveryKey, attempt);
+                scheduleRetry(url, payload, deliveryKey, start, attempt);
 
             }
             // Other errors (400, 401, etc.) — don't retry per spec
 
         } catch (Exception e) {
             // Connection error — also retry
-            scheduleRetry(url, payload, deliveryKey, attempt);
+            scheduleRetry(url, payload, deliveryKey, start, attempt);
         }
     }
 
     private void scheduleRetry(String url, Map<String, Object> payload,
-                                String deliveryKey, int attempt) {
+                                String deliveryKey, Instant start, int attempt) {
+        long elapsedSeconds = Duration.between(start, Instant.now()).getSeconds();
+        long remainingSeconds = DELIVERY_DEADLINE_SECONDS - elapsedSeconds;
+        if (remainingSeconds <= 0) {
+            return;
+        }
+
         // Exponential backoff: 2s, 4s, 8s... capped at 30s
         long delaySeconds = Math.min(2L * (long) Math.pow(2, attempt), 30L);
+        delaySeconds = Math.min(delaySeconds, remainingSeconds);
+        if (delaySeconds <= 0) {
+            return;
+        }
         retryScheduler.schedule(
-            () -> deliverWithRetry(url, payload, deliveryKey, attempt + 1),
+            () -> deliverWithRetry(url, payload, deliveryKey, start, attempt + 1),
             delaySeconds,
             TimeUnit.SECONDS
         );
+    }
+
+    private boolean isDeadlineExceeded(Instant start) {
+        return Duration.between(start, Instant.now()).getSeconds() >= DELIVERY_DEADLINE_SECONDS;
+    }
+
+    private ExecutorService getReceiverExecutor(String receiverKey) {
+        return receiverExecutors.computeIfAbsent(receiverKey,
+            key -> Executors.newSingleThreadExecutor());
     }
 
     // ---------------------------------------------------------------
@@ -177,7 +208,7 @@ public class WebhookDeliveryService {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("event", "alert.fired");
         payload.put("alert_id", alert.getAlertId());
-        payload.put("fired_at", alert.getFiredAt().toString());
+        payload.put("fired_at", formatInstant(alert.getFiredAt()));
         payload.put("failure_rate", alert.getFailureRate());
         payload.put("total_proxies", alert.getTotalProxies());
         payload.put("failed_proxies", alert.getFailedProxies());
@@ -191,7 +222,8 @@ public class WebhookDeliveryService {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("event", "alert.resolved");
         payload.put("alert_id", alert.getAlertId());
-        payload.put("resolved_at", alert.getResolvedAt().toString());
+        Instant resolvedAt = alert.getResolvedAt() != null ? alert.getResolvedAt() : Instant.now();
+        payload.put("resolved_at", formatInstant(resolvedAt));
         return payload;
     }
 
@@ -207,7 +239,7 @@ public class WebhookDeliveryService {
         fields.add(field("Failed Proxies", String.valueOf(alert.getFailedProxies())));
         fields.add(field("Threshold", String.valueOf(alert.getThreshold())));
         fields.add(field("Failed IDs", String.join(", ", alert.getFailedProxyIds())));
-        fields.add(field("Fired At", alert.getFiredAt().toString()));
+        fields.add(field("Fired At", formatInstant(alert.getFiredAt())));
 
         Map<String, Object> attachment = new LinkedHashMap<>();
         attachment.put("color", "#FF0000");  // Red for alert fired
@@ -230,7 +262,7 @@ public class WebhookDeliveryService {
         fields.add(field("Threshold", String.valueOf(alert.getThreshold())));
         fields.add(field("Failed IDs", alert.getFailedProxyIds().isEmpty()
             ? "none" : String.join(", ", alert.getFailedProxyIds())));
-        fields.add(field("Fired At", alert.getFiredAt().toString()));
+        fields.add(field("Fired At", formatInstant(alert.getFiredAt())));
 
         Instant ts = alert.getResolvedAt() != null ? alert.getResolvedAt() : Instant.now();
 
@@ -316,6 +348,10 @@ public class WebhookDeliveryService {
         f.put("value", value);
         f.put("inline", true);
         return f;
+    }
+
+    private String formatInstant(Instant instant) {
+        return ISO_INSTANT.format(instant);
     }
 }
 

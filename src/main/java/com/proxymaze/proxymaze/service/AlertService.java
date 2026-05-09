@@ -72,7 +72,7 @@ public class AlertService {
             } else {
                 // Still breaching — update the active alert to reflect CURRENT state
                 // This satisfies the rule: GET /proxies, GET /alerts, webhook must agree
-                activeAlert.updateActiveState(failureRate, totalProxies, downCount, downIds);
+                activeAlert.updateActiveState(failureRate, downCount, downIds);
             }
         }
     }

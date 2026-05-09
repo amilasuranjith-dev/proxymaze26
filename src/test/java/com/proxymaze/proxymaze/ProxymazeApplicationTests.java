@@ -1,6 +1,10 @@
 package com.proxymaze.proxymaze;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.proxymaze.proxymaze.model.Alert;
+import com.proxymaze.proxymaze.store.DataStore;
+import java.time.Instant;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -20,6 +24,9 @@ class ProxymazeApplicationTests {
 
 	@Autowired
 	ObjectMapper om;
+
+	@Autowired
+	DataStore store;
 
 	@Test
 	void health_ok() throws Exception {
@@ -117,5 +124,18 @@ class ProxymazeApplicationTests {
 			.andExpect(jsonPath("$.active_alerts").exists())
 			.andExpect(jsonPath("$.total_alerts").exists())
 			.andExpect(jsonPath("$.webhook_deliveries").exists());
+	}
+
+	@Test
+	void deleteProxies_doesNotClearAlerts() throws Exception {
+		Alert alert = new Alert("alert-test", 0.5, 2, 1, List.of("px-1"), Instant.now());
+		store.addAlert(alert);
+
+		mvc.perform(delete("/proxies"))
+			.andExpect(status().isNoContent());
+
+		mvc.perform(get("/alerts"))
+			.andExpect(status().isOk())
+			.andExpect(jsonPath("$[?(@.alert_id=='alert-test')]").exists());
 	}
 }
