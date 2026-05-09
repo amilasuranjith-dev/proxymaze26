@@ -19,7 +19,6 @@ import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.*;
 
-// Webhook delivery service handles async delivery of alerts to webhooks.
 @Service
 public class WebhookDeliveryService {
 
@@ -28,19 +27,17 @@ public class WebhookDeliveryService {
 
     private final DataStore store;
     private final ObjectMapper objectMapper;
-    private final ScheduledExecutorService retryScheduler =
-        Executors.newSingleThreadScheduledExecutor();
+    private final ScheduledExecutorService retryScheduler = Executors.newSingleThreadScheduledExecutor();
 
-    // Serialize deliveries per receiver to preserve event ordering
+    // One serialized executor per receiver preserves event ordering per destination.
     private final Map<String, ExecutorService> receiverExecutors = new ConcurrentHashMap<>();
 
     private final HttpClient httpClient = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(10))
         .build();
 
-    //successfully delivered. Prevents duplicate deliveries.
-    private final Set<String> deliveredKeys =
-        Collections.newSetFromMap(new ConcurrentHashMap<>());
+    // Tracks successfully delivered keys to prevent duplicate deliveries on retry.
+    private final Set<String> deliveredKeys = Collections.newSetFromMap(new ConcurrentHashMap<>());
 
     @Autowired
     public WebhookDeliveryService(DataStore store, ObjectMapper objectMapper) {
@@ -56,86 +53,54 @@ public class WebhookDeliveryService {
         retryScheduler.shutdown();
     }
 
-    // ---------------------------------------------------------------
-    // alert.fired
-    // ---------------------------------------------------------------
-
     public void deliverAlertFired(Alert alert) {
         Map<String, Object> payload = buildFiredPayload(alert);
-
-        // Generic webhooks
         for (WebhookRegistration wh : store.getAllWebhooks()) {
             String receiverKey = "wh:" + wh.getWebhookId();
             String key = alert.getAlertId() + ":fired:" + wh.getWebhookId();
             enqueueDelivery(receiverKey, wh.getUrl(), payload, key);
         }
-
-        // Slack/Discord integrations
         for (Integration integration : store.getAllIntegrations()) {
             if (integration.getEvents().contains("alert.fired")) {
                 String receiverKey = "int:" + integration.getIntegrationId();
                 String key = alert.getAlertId() + ":fired:integration:" + integration.getIntegrationId();
                 if ("slack".equals(integration.getType())) {
-                    Map<String, Object> slackPayload = buildSlackFiredPayload(alert, integration);
-                    enqueueDelivery(receiverKey, integration.getWebhookUrl(), slackPayload, key);
+                    enqueueDelivery(receiverKey, integration.getWebhookUrl(), buildSlackFiredPayload(alert, integration), key);
                 } else if ("discord".equals(integration.getType())) {
-                    Map<String, Object> discordPayload = buildDiscordFiredPayload(alert);
-                    enqueueDelivery(receiverKey, integration.getWebhookUrl(), discordPayload, key);
+                    enqueueDelivery(receiverKey, integration.getWebhookUrl(), buildDiscordFiredPayload(alert), key);
                 }
             }
         }
     }
 
-    // ---------------------------------------------------------------
-    // alert.resolved
-    // ---------------------------------------------------------------
-
     public void deliverAlertResolved(Alert alert) {
         Map<String, Object> payload = buildResolvedPayload(alert);
-
-        // Generic webhooks
         for (WebhookRegistration wh : store.getAllWebhooks()) {
             String receiverKey = "wh:" + wh.getWebhookId();
             String key = alert.getAlertId() + ":resolved:" + wh.getWebhookId();
             enqueueDelivery(receiverKey, wh.getUrl(), payload, key);
         }
-
-        // Slack/Discord integrations
         for (Integration integration : store.getAllIntegrations()) {
             if (integration.getEvents().contains("alert.resolved")) {
                 String receiverKey = "int:" + integration.getIntegrationId();
                 String key = alert.getAlertId() + ":resolved:integration:" + integration.getIntegrationId();
                 if ("slack".equals(integration.getType())) {
-                    Map<String, Object> slackPayload = buildSlackResolvedPayload(alert, integration);
-                    enqueueDelivery(receiverKey, integration.getWebhookUrl(), slackPayload, key);
+                    enqueueDelivery(receiverKey, integration.getWebhookUrl(), buildSlackResolvedPayload(alert, integration), key);
                 } else if ("discord".equals(integration.getType())) {
-                    Map<String, Object> discordPayload = buildDiscordResolvedPayload(alert);
-                    enqueueDelivery(receiverKey, integration.getWebhookUrl(), discordPayload, key);
+                    enqueueDelivery(receiverKey, integration.getWebhookUrl(), buildDiscordResolvedPayload(alert), key);
                 }
             }
         }
     }
 
-    private void enqueueDelivery(String receiverKey, String url, Map<String, Object> payload,
-                                 String deliveryKey) {
+    private void enqueueDelivery(String receiverKey, String url, Map<String, Object> payload, String deliveryKey) {
         Instant start = Instant.now();
-        getReceiverExecutor(receiverKey).submit(() ->
-            deliverWithRetry(url, payload, deliveryKey, start, 0)
-        );
+        getReceiverExecutor(receiverKey).submit(() -> deliverWithRetry(url, payload, deliveryKey, start, 0));
     }
 
-    // ---------------------------------------------------------------
-    // Core retry-aware delivery
-    // ---------------------------------------------------------------
-
-    private void deliverWithRetry(String url, Map<String, Object> payload,
-                                   String deliveryKey, Instant start, int attempt) {
-        // Already successfully delivered — stop
+    private void deliverWithRetry(String url, Map<String, Object> payload, String deliveryKey, Instant start, int attempt) {
         if (deliveredKeys.contains(deliveryKey)) return;
-
-        if (isDeadlineExceeded(start)) {
-            return;
-        }
+        if (isDeadlineExceeded(start)) return;
 
         try {
             String json = objectMapper.writeValueAsString(payload);
@@ -146,44 +111,30 @@ public class WebhookDeliveryService {
                 .POST(HttpRequest.BodyPublishers.ofString(json))
                 .build();
 
-            HttpResponse<String> response = httpClient.send(
-                request, HttpResponse.BodyHandlers.ofString()
-            );
-
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             int code = response.statusCode();
 
             if (code >= 200 && code < 300) {
-                // SUCCESS — mark as delivered, never send again
                 deliveredKeys.add(deliveryKey);
                 store.incrementWebhookDeliveries();
-
             } else if (code == 500 || code == 502 || code == 503 || code == 504) {
-                // Transient failure — schedule retry with backoff
                 scheduleRetry(url, payload, deliveryKey, start, attempt);
-
             }
-            // Other errors (400, 401, etc.) — don't retry per spec
 
         } catch (Exception e) {
-            // Connection error — also retry
             scheduleRetry(url, payload, deliveryKey, start, attempt);
         }
     }
 
-    private void scheduleRetry(String url, Map<String, Object> payload,
-                                String deliveryKey, Instant start, int attempt) {
+    private void scheduleRetry(String url, Map<String, Object> payload, String deliveryKey, Instant start, int attempt) {
         long elapsedSeconds = Duration.between(start, Instant.now()).getSeconds();
         long remainingSeconds = DELIVERY_DEADLINE_SECONDS - elapsedSeconds;
-        if (remainingSeconds <= 0) {
-            return;
-        }
+        if (remainingSeconds <= 0) return;
 
-        // Exponential backoff: 2s, 4s, 8s... capped at 30s
         long delaySeconds = Math.min(2L * (long) Math.pow(2, attempt), 30L);
         delaySeconds = Math.min(delaySeconds, remainingSeconds);
-        if (delaySeconds <= 0) {
-            return;
-        }
+        if (delaySeconds <= 0) return;
+
         retryScheduler.schedule(
             () -> deliverWithRetry(url, payload, deliveryKey, start, attempt + 1),
             delaySeconds,
@@ -196,13 +147,8 @@ public class WebhookDeliveryService {
     }
 
     private ExecutorService getReceiverExecutor(String receiverKey) {
-        return receiverExecutors.computeIfAbsent(receiverKey,
-            key -> Executors.newSingleThreadExecutor());
+        return receiverExecutors.computeIfAbsent(receiverKey, key -> Executors.newSingleThreadExecutor());
     }
-
-    // ---------------------------------------------------------------
-    // Payload Builders
-    // ---------------------------------------------------------------
 
     private Map<String, Object> buildFiredPayload(Alert alert) {
         Map<String, Object> payload = new LinkedHashMap<>();
@@ -222,30 +168,33 @@ public class WebhookDeliveryService {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("event", "alert.resolved");
         payload.put("alert_id", alert.getAlertId());
+        payload.put("status", "resolved");
         Instant resolvedAt = alert.getResolvedAt() != null ? alert.getResolvedAt() : Instant.now();
         payload.put("resolved_at", formatInstant(resolvedAt));
+        payload.put("fired_at", formatInstant(alert.getFiredAt()));
+        payload.put("failure_rate", alert.getFailureRate());
+        payload.put("total_proxies", alert.getTotalProxies());
+        payload.put("failed_proxies", alert.getFailedProxies());
+        payload.put("failed_proxy_ids", alert.getFailedProxyIds());
+        payload.put("threshold", alert.getThreshold());
+        payload.put("message", alert.getMessage());
         return payload;
     }
-
-    // ---------------------------------------------------------------
-    // Slack Payload Builder
-    // ---------------------------------------------------------------
 
     private Map<String, Object> buildSlackFiredPayload(Alert alert, Integration integration) {
         List<Map<String, Object>> fields = new ArrayList<>();
         fields.add(field("Alert ID", alert.getAlertId()));
-        fields.add(field("Failure Rate", String.format("%.2f (%.0f%%)",
-            alert.getFailureRate(), alert.getFailureRate() * 100)));
+        fields.add(field("Failure Rate", String.format("%.2f (%.0f%%)", alert.getFailureRate(), alert.getFailureRate() * 100)));
         fields.add(field("Failed Proxies", String.valueOf(alert.getFailedProxies())));
         fields.add(field("Threshold", String.valueOf(alert.getThreshold())));
         fields.add(field("Failed IDs", String.join(", ", alert.getFailedProxyIds())));
         fields.add(field("Fired At", formatInstant(alert.getFiredAt())));
 
         Map<String, Object> attachment = new LinkedHashMap<>();
-        attachment.put("color", "#FF0000");  // Red for alert fired
+        attachment.put("color", "#FF0000");
         attachment.put("fields", fields);
         attachment.put("footer", "ProxyMaze'26 — Torch Labs");
-        attachment.put("ts", alert.getFiredAt().getEpochSecond()); // integer, not float/string
+        attachment.put("ts", alert.getFiredAt().getEpochSecond());
 
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("username", integration.getUsername() != null ? integration.getUsername() : "ProxyWatch");
@@ -260,17 +209,15 @@ public class WebhookDeliveryService {
         fields.add(field("Failure Rate", String.format("%.2f", alert.getFailureRate())));
         fields.add(field("Failed Proxies", String.valueOf(alert.getFailedProxies())));
         fields.add(field("Threshold", String.valueOf(alert.getThreshold())));
-        fields.add(field("Failed IDs", alert.getFailedProxyIds().isEmpty()
-            ? "none" : String.join(", ", alert.getFailedProxyIds())));
+        fields.add(field("Failed IDs", alert.getFailedProxyIds().isEmpty() ? "none" : String.join(", ", alert.getFailedProxyIds())));
         fields.add(field("Fired At", formatInstant(alert.getFiredAt())));
 
         Instant ts = alert.getResolvedAt() != null ? alert.getResolvedAt() : Instant.now();
-
         Map<String, Object> attachment = new LinkedHashMap<>();
-        attachment.put("color", "#00FF00");  // Green for resolved
+        attachment.put("color", "#00FF00");
         attachment.put("fields", fields);
         attachment.put("footer", "ProxyMaze'26 — Torch Labs");
-        attachment.put("ts", ts.getEpochSecond()); // integer
+        attachment.put("ts", ts.getEpochSecond());
 
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("username", integration.getUsername() != null ? integration.getUsername() : "ProxyWatch");
@@ -278,10 +225,6 @@ public class WebhookDeliveryService {
         payload.put("attachments", List.of(attachment));
         return payload;
     }
-
-    // ---------------------------------------------------------------
-    // Discord Payload Builder
-    // ---------------------------------------------------------------
 
     private Map<String, Object> buildDiscordFiredPayload(Alert alert) {
         List<Map<String, Object>> fields = new ArrayList<>();
@@ -293,9 +236,8 @@ public class WebhookDeliveryService {
 
         Map<String, Object> embed = new LinkedHashMap<>();
         embed.put("title", "🚨 Alert Fired — Proxy Pool Degraded");
-        embed.put("description", "Proxy pool failure rate has exceeded the threshold of "
-            + alert.getThreshold() + ". Immediate attention required.");
-        embed.put("color", 16711680); // Red: 0xFF0000 = 16711680 (integer, 0-16777215)
+        embed.put("description", "Proxy pool failure rate has exceeded the threshold of " + alert.getThreshold() + ". Immediate attention required.");
+        embed.put("color", 16711680);
         embed.put("fields", fields);
 
         Map<String, Object> footer = new HashMap<>();
@@ -313,13 +255,12 @@ public class WebhookDeliveryService {
         fields.add(discordField("Failure Rate", String.format("%.2f", alert.getFailureRate())));
         fields.add(discordField("Failed Proxies", String.valueOf(alert.getFailedProxies())));
         fields.add(discordField("Threshold", String.valueOf(alert.getThreshold())));
-        fields.add(discordField("Failed IDs", alert.getFailedProxyIds().isEmpty()
-            ? "none" : String.join(", ", alert.getFailedProxyIds())));
+        fields.add(discordField("Failed IDs", alert.getFailedProxyIds().isEmpty() ? "none" : String.join(", ", alert.getFailedProxyIds())));
 
         Map<String, Object> embed = new LinkedHashMap<>();
         embed.put("title", "✅ Alert Resolved — Proxy Pool Healthy");
         embed.put("description", "Proxy pool failure rate has dropped below threshold. System is healthy.");
-        embed.put("color", 65280); // Green: 0x00FF00 = 65280
+        embed.put("color", 65280);
         embed.put("fields", fields);
 
         Map<String, Object> footer = new HashMap<>();
@@ -330,10 +271,6 @@ public class WebhookDeliveryService {
         payload.put("embeds", List.of(embed));
         return payload;
     }
-
-    // ---------------------------------------------------------------
-    // Helpers
-    // ---------------------------------------------------------------
 
     private Map<String, Object> field(String title, String value) {
         Map<String, Object> f = new LinkedHashMap<>();
@@ -354,4 +291,3 @@ public class WebhookDeliveryService {
         return ISO_INSTANT.format(instant);
     }
 }
-

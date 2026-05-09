@@ -3,7 +3,7 @@ package com.proxymaze.proxymaze.model;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Getter;
 import java.time.Instant;
-import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 @Getter
@@ -12,7 +12,7 @@ public class Alert {
     private final String alertId;
 
     @JsonProperty("status")
-    private volatile String status;   // "active" or "resolved"
+    private volatile String status;
 
     @JsonProperty("failure_rate")
     private volatile double failureRate;
@@ -23,8 +23,10 @@ public class Alert {
     @JsonProperty("failed_proxies")
     private volatile int failedProxies;
 
+    // Immutable snapshot of the proxy IDs that were down at the moment of firing.
+    // Per spec this list must never change for the lifetime of the alert.
     @JsonProperty("failed_proxy_ids")
-    private volatile List<String> failedProxyIds;
+    private final List<String> failedProxyIds;
 
     @JsonProperty("threshold")
     private final double threshold = 0.2;
@@ -45,31 +47,25 @@ public class Alert {
         this.failureRate = failureRate;
         this.totalProxies = totalProxies;
         this.failedProxies = failedProxies;
-        this.failedProxyIds = new ArrayList<>(failedProxyIds);
+        this.failedProxyIds = Collections.unmodifiableList(List.copyOf(failedProxyIds));
         this.firedAt = firedAt;
         this.resolvedAt = null;
         this.message = buildMessage(failedProxies, totalProxies, failureRate);
     }
 
-    //Update the active alert to reflect current down state during ongoing breach.
-    //Keep total_proxies as the fire-time snapshot per spec.
-    public synchronized void updateActiveState(double newRate,
-                                               int failed, List<String> failedIds) {
+    public synchronized void updateActiveState(double newRate, int failed) {
         this.failureRate = newRate;
         this.failedProxies = failed;
-        this.failedProxyIds = new ArrayList<>(failedIds);
         this.message = buildMessage(failed, this.totalProxies, newRate);
     }
 
-    //Resolve the alert when failure rate drops below threshold.
     public synchronized void resolve(Instant resolvedAt) {
         this.status = "resolved";
         this.resolvedAt = resolvedAt;
     }
 
     private String buildMessage(int failed, int total, double rate) {
-        double pct = rate * 100.0;
         return String.format("Proxy pool failure rate exceeded threshold: %d/%d down (%.1f%%)",
-            failed, total, pct);
+            failed, total, rate * 100.0);
     }
 }

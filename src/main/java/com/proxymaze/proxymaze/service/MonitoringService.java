@@ -17,6 +17,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @Service
 public class MonitoringService {
@@ -24,20 +25,14 @@ public class MonitoringService {
     private final DataStore store;
     private final AlertService alertService;
 
-    // Single-threaded scheduler controls the monitoring loop
-    private final ScheduledExecutorService scheduler =
-        Executors.newSingleThreadScheduledExecutor();
-
-    // Thread pool for parallel proxy probes
-    private final ExecutorService probePool =
-        Executors.newCachedThreadPool();
-
-    // Keeps reference to the current scheduled task so we can cancel it on reschedule
+    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    private final ExecutorService probePool = Executors.newCachedThreadPool();
     private volatile ScheduledFuture<?> currentTask;
+    private final AtomicBoolean cycleRunning = new AtomicBoolean(false);
 
-    // HttpClient - created once, used for all probes
+    // Connect timeout is kept short so the per-request timeout governs total probe duration.
     private final HttpClient httpClient = HttpClient.newBuilder()
-        .connectTimeout(Duration.ofSeconds(30))
+        .connectTimeout(Duration.ofMillis(500))
         .followRedirects(HttpClient.Redirect.NEVER)
         .build();
 
@@ -49,7 +44,6 @@ public class MonitoringService {
 
     @PostConstruct
     public void start() {
-        // Start the monitoring loop with default config on startup
         reschedule(store.getConfig().getCheckIntervalSeconds());
     }
 
@@ -60,26 +54,30 @@ public class MonitoringService {
         probePool.shutdown();
     }
 
-    //Cancels the current loop and starts a new one with the new interval.
+    // scheduleWithFixedDelay ensures cycles never overlap — next run begins only after
+    // the current one fully completes (all probes + alert evaluation done).
     public synchronized void reschedule(int intervalSeconds) {
         if (currentTask != null && !currentTask.isDone()) {
-            currentTask.cancel(false); // don't interrupt if running
+            currentTask.cancel(false);
         }
-        currentTask = scheduler.scheduleAtFixedRate(
+        currentTask = scheduler.scheduleWithFixedDelay(
             this::runCheckCycle,
-            0,                   // start immediately
+            0,
             intervalSeconds,
             TimeUnit.SECONDS
         );
     }
 
-    //Trigger an immediate check cycle (used when new proxies are added).
     public void triggerImmediateCheck() {
         probePool.submit(this::runCheckCycle);
     }
 
-    //One complete monitoring pass: probe all proxies, then evaluate alerts.
     private void runCheckCycle() {
+        // cycleRunning guards against a race between the scheduled loop and
+        // triggerImmediateCheck() submitting a concurrent invocation.
+        if (!cycleRunning.compareAndSet(false, true)) {
+            return;
+        }
         try {
             MonitoringConfigData config = store.getConfig();
             List<ProxyEntry> proxies = store.getAllProxies();
@@ -89,38 +87,27 @@ public class MonitoringService {
                 return;
             }
 
-            // Probe all proxies in parallel
+            int timeoutMs = config.getRequestTimeoutMs();
             List<CompletableFuture<Void>> futures = new ArrayList<>();
             for (ProxyEntry proxy : proxies) {
                 futures.add(CompletableFuture.runAsync(() -> {
-                    String result = probeProxy(proxy.getUrl(), config.getRequestTimeoutMs());
+                    String result = probeProxy(proxy.getUrl(), timeoutMs);
                     proxy.recordCheck(result, Instant.now());
                     store.incrementTotalChecks();
                 }, probePool));
             }
 
-            // Wait for ALL probes to finish before evaluating alerts
             CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-
-            // Evaluate alerts after all probes are done
             alertService.evaluate();
 
         } catch (Exception e) {
-            // Never let a crash kill the monitoring loop
             System.err.println("MonitoringService cycle error: " + e.getMessage());
             e.printStackTrace();
+        } finally {
+            cycleRunning.set(false);
         }
     }
 
-    /**
-     * Makes a real HTTP GET request to the proxy URL.
-     * Returns "up" if 2xx received within timeout, "down" otherwise.
-     *
-     * - 2xx within timeout_ms → "up"
-     * - Timeout, connection refused, any error → "down"
-     * - 5xx response → "down"
-     * - Any other non-2xx → "down"
-     */
     private String probeProxy(String url, int timeoutMs) {
         try {
             HttpRequest request = HttpRequest.newBuilder()
@@ -129,22 +116,12 @@ public class MonitoringService {
                 .GET()
                 .build();
 
-            HttpResponse<Void> response = httpClient.send(
-                request,
-                HttpResponse.BodyHandlers.discarding() // don't read body, save memory
-            );
-
+            HttpResponse<Void> response = httpClient.send(request, HttpResponse.BodyHandlers.discarding());
             int code = response.statusCode();
-            if (code >= 200 && code < 300) {
-                return "up";
-            } else {
-                return "down"; // 5xx, 4xx, 3xx — only 2xx = up
-            }
+            return (code >= 200 && code < 300) ? "up" : "down";
 
         } catch (Exception e) {
-            // HttpTimeoutException, ConnectException, IOException, etc.
             return "down";
         }
     }
 }
-

@@ -9,13 +9,10 @@ import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
-//Alert service manages the complete alert lifecycle.
-//State machine:
-//     Normal (no active alert):
-//    failure_rate >= 0.20 -> fire alert -> Active
-//ctive (alert exists):
-//      failure_rate < 0.20  -> resolve alert -> Resolved
-//      failure_rate >= 0.20 -> update alert with current state (no new alert)
+// State machine:
+//   No active alert  + rate >= 0.20  →  fire new alert
+//   Active alert     + rate <  0.20  →  resolve alert
+//   Active alert     + rate >= 0.20  →  update live metrics (no new alert, no duplicate webhook)
 @Service
 public class AlertService {
 
@@ -30,7 +27,6 @@ public class AlertService {
         this.webhookDeliveryService = webhookDeliveryService;
     }
 
-    //Evaluates current failure rate and updates alert state accordingly.
     public synchronized void evaluate() {
         double failureRate = store.calculateFailureRate();
         List<String> downIds = store.getDownProxyIds();
@@ -40,41 +36,22 @@ public class AlertService {
         Alert activeAlert = store.getActiveAlert();
 
         if (activeAlert == null) {
-            // No active alert — check if we need to fire one
             if (failureRate >= THRESHOLD) {
                 String alertId = "alert-" + UUID.randomUUID().toString().substring(0, 8);
-                Alert newAlert = new Alert(
-                    alertId,
-                    failureRate,
-                    totalProxies,
-                    downCount,
-                    downIds,
-                    Instant.now()
-                );
+                Alert newAlert = new Alert(alertId, failureRate, totalProxies, downCount, downIds, Instant.now());
                 store.addAlert(newAlert);
                 store.setActiveAlert(newAlert);
-
-                // Deliver webhook events asynchronously
                 webhookDeliveryService.deliverAlertFired(newAlert);
             }
-
         } else {
-            // There is an active alert
             if (failureRate < THRESHOLD) {
-                // Resolve the alert
-                Instant resolvedAt = Instant.now();
-                activeAlert.resolve(resolvedAt);
+                activeAlert.resolve(Instant.now());
                 store.setActiveAlert(null);
-
-                // Deliver resolved event
                 webhookDeliveryService.deliverAlertResolved(activeAlert);
-
             } else {
-                // Still breaching — update the active alert to reflect CURRENT state
-                // This satisfies the rule: GET /proxies, GET /alerts, webhook must agree
-                activeAlert.updateActiveState(failureRate, downCount, downIds);
+                // failed_proxy_ids stays frozen at fire time; only live counters are updated.
+                activeAlert.updateActiveState(failureRate, downCount);
             }
         }
     }
 }
-
