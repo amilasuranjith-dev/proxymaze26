@@ -10,10 +10,14 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.Instant;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 
 @RestController
 public class ProxyController {
+
+    private static final DateTimeFormatter ISO_INSTANT = DateTimeFormatter.ISO_INSTANT;
 
     private final DataStore store;
     private final MonitoringService monitoringService;
@@ -91,7 +95,7 @@ public class ProxyController {
                 List<Map<String, Object>> history = new ArrayList<>();
                 for (CheckRecord record : p.getHistoryCopy()) {
                     Map<String, Object> entry = new LinkedHashMap<>();
-                    entry.put("checked_at", record.getCheckedAt().toString());
+                    entry.put("checked_at", formatInstant(record.getCheckedAt()));
                     entry.put("status", record.getStatus());
                     history.add(entry);
                 }
@@ -119,7 +123,7 @@ public class ProxyController {
         m.put("url", p.getUrl());
         m.put("status", p.getStatus());
         m.put("last_checked_at", p.getLastCheckedAt() != null
-            ? p.getLastCheckedAt().toString() : null);
+            ? formatInstant(p.getLastCheckedAt()) : null);
         m.put("consecutive_failures", p.getConsecutiveFailures());
         return m;
     }
@@ -130,7 +134,7 @@ public class ProxyController {
         m.put("url", p.getUrl());
         m.put("status", p.getStatus());
         m.put("last_checked_at", p.getLastCheckedAt() != null
-            ? p.getLastCheckedAt().toString() : null);
+            ? formatInstant(p.getLastCheckedAt()) : null);
         m.put("consecutive_failures", p.getConsecutiveFailures());
         m.put("total_checks", p.getTotalChecks());
         m.put("uptime_percentage", p.getUptimePercentage());
@@ -138,12 +142,16 @@ public class ProxyController {
         List<Map<String, Object>> history = new ArrayList<>();
         for (CheckRecord record : p.getHistoryCopy()) {
             Map<String, Object> entry = new LinkedHashMap<>();
-            entry.put("checked_at", record.getCheckedAt().toString());
+            entry.put("checked_at", formatInstant(record.getCheckedAt()));
             entry.put("status", record.getStatus());
             history.add(entry);
         }
         m.put("history", history);
         return m;
+    }
+
+    private String formatInstant(Instant instant) {
+        return ISO_INSTANT.format(instant);
     }
 }
 

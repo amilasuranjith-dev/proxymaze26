@@ -6,10 +6,14 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.Instant;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 
 @RestController
 public class AlertController {
+
+    private static final DateTimeFormatter ISO_INSTANT = DateTimeFormatter.ISO_INSTANT;
 
     private final DataStore store;
 
@@ -36,11 +40,14 @@ public class AlertController {
         msg.put("failed_proxies", alert.getFailedProxies());
         msg.put("failed_proxy_ids", alert.getFailedProxyIds());
         msg.put("threshold", alert.getThreshold());
-        msg.put("fired_at", alert.getFiredAt().toString());
+        msg.put("fired_at", formatInstant(alert.getFiredAt()));
         msg.put("resolved_at", alert.getResolvedAt() != null
-            ? alert.getResolvedAt().toString() : null);
+            ? formatInstant(alert.getResolvedAt()) : null);
         msg.put("message", alert.getMessage());
         return msg;
     }
-}
 
+    private String formatInstant(Instant instant) {
+        return ISO_INSTANT.format(instant);
+    }
+}

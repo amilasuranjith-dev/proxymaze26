@@ -100,8 +100,7 @@ public class MonitoringService {
             }
 
             // Wait for ALL probes to finish before evaluating alerts
-            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
-                .get(60, TimeUnit.SECONDS); // safety timeout
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
 
             // Evaluate alerts after all probes are done
             alertService.evaluate();

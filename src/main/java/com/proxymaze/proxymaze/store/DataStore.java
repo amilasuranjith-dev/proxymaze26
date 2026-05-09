@@ -55,7 +55,13 @@ public class DataStore {
     //Extract proxy ID from URL.
     //https://proxy-provider.example/proxy/px-101" → "px-101"
     public static String extractId(String url) {
-        String trimmed = url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
+        if (url == null || url.isBlank()) {
+            return "";
+        }
+        String trimmed = url.trim();
+        while (trimmed.endsWith("/")) {
+            trimmed = trimmed.substring(0, trimmed.length() - 1);
+        }
         int lastSlash = trimmed.lastIndexOf('/');
         return lastSlash >= 0 ? trimmed.substring(lastSlash + 1) : trimmed;
     }
@@ -64,6 +70,9 @@ public class DataStore {
         synchronized (proxyPool) {
             if (replace) {
                 proxyPool.clear();
+            }
+            if (urls == null) {
+                return List.of();
             }
             List<ProxyEntry> added = new ArrayList<>();
             for (String url : urls) {
