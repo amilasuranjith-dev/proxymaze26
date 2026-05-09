@@ -117,7 +117,7 @@ public class WebhookDeliveryService {
             if (code >= 200 && code < 300) {
                 deliveredKeys.add(deliveryKey);
                 store.incrementWebhookDeliveries();
-            } else if (code == 500 || code == 502 || code == 503 || code == 504) {
+            } else {
                 scheduleRetry(url, payload, deliveryKey, start, attempt);
             }
 

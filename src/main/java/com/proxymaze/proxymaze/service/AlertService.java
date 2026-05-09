@@ -45,6 +45,7 @@ public class AlertService {
             }
         } else {
             if (failureRate < THRESHOLD) {
+                activeAlert.updateActiveState(failureRate, downCount);
                 activeAlert.resolve(Instant.now());
                 store.setActiveAlert(null);
                 webhookDeliveryService.deliverAlertResolved(activeAlert);
