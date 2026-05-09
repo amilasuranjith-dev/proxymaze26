@@ -15,8 +15,8 @@ public class MonitoringConfigData {
 
     public MonitoringConfigData() {
         // Sensible defaults
-        this.checkIntervalSeconds = 60;
-        this.requestTimeoutMs = 5000;
+        this.checkIntervalSeconds =15;
+        this.requestTimeoutMs = 3000;
     }
 }
 
