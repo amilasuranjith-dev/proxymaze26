@@ -25,16 +25,22 @@ public class MonitoringService {
     private final DataStore store;
     private final AlertService alertService;
 
+    // Single-threaded scheduler controls the monitoring loop
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+
+    // Thread pool for parallel proxy probes
     private final ExecutorService probePool = Executors.newCachedThreadPool();
+
+    // Keeps reference to the current scheduled task so we can cancel it on
+    // reschedule
     private volatile ScheduledFuture<?> currentTask;
     private final AtomicBoolean cycleRunning = new AtomicBoolean(false);
 
     // Connect timeout is kept short so the per-request timeout governs total probe duration.
     private final HttpClient httpClient = HttpClient.newBuilder()
-        .connectTimeout(Duration.ofMillis(500))
-        .followRedirects(HttpClient.Redirect.NEVER)
-        .build();
+            .connectTimeout(Duration.ofSeconds(30))
+            .followRedirects(HttpClient.Redirect.NEVER)
+            .build();
 
     @Autowired
     public MonitoringService(DataStore store, AlertService alertService) {
@@ -49,29 +55,30 @@ public class MonitoringService {
 
     @PreDestroy
     public void stop() {
-        if (currentTask != null) currentTask.cancel(false);
+        if (currentTask != null)
+            currentTask.cancel(false);
         scheduler.shutdown();
         probePool.shutdown();
     }
 
-    // scheduleWithFixedDelay ensures cycles never overlap — next run begins only after
-    // the current one fully completes (all probes + alert evaluation done).
+    // Cancels the current loop and starts a new one with the new interval.
     public synchronized void reschedule(int intervalSeconds) {
         if (currentTask != null && !currentTask.isDone()) {
             currentTask.cancel(false);
         }
-        currentTask = scheduler.scheduleWithFixedDelay(
-            this::runCheckCycle,
-            0,
-            intervalSeconds,
-            TimeUnit.SECONDS
-        );
+        currentTask = scheduler.scheduleAtFixedRate(
+                this::runCheckCycle,
+                0, // start immediately
+                intervalSeconds,
+                TimeUnit.SECONDS);
     }
 
+    // Trigger an immediate check cycle (used when new proxies are added).
     public void triggerImmediateCheck() {
         probePool.submit(this::runCheckCycle);
     }
 
+    // One complete monitoring pass: probe all proxies, then evaluate alerts.
     private void runCheckCycle() {
         // cycleRunning guards against a race between the scheduled loop and
         // triggerImmediateCheck() submitting a concurrent invocation.
@@ -111,12 +118,16 @@ public class MonitoringService {
     private String probeProxy(String url, int timeoutMs) {
         try {
             HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(url))
-                .timeout(Duration.ofMillis(timeoutMs))
-                .GET()
-                .build();
+                    .uri(URI.create(url))
+                    .timeout(Duration.ofMillis(timeoutMs))
+                    .GET()
+                    .build();
 
-            HttpResponse<Void> response = httpClient.send(request, HttpResponse.BodyHandlers.discarding());
+            HttpResponse<Void> response = httpClient.send(
+                    request,
+                    HttpResponse.BodyHandlers.discarding() // don't read body, save memory
+            );
+
             int code = response.statusCode();
             return (code >= 200 && code < 300) ? "up" : "down";
 

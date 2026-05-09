@@ -14,8 +14,9 @@ public class MonitoringConfigData {
     private volatile int requestTimeoutMs;
 
     public MonitoringConfigData() {
-        this.checkIntervalSeconds = 60;
-        this.requestTimeoutMs = 5000;
+        // Sensible defaults
+        this.checkIntervalSeconds =15;
+        this.requestTimeoutMs = 3000;
     }
 }
 

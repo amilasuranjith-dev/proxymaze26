@@ -49,7 +49,8 @@ public class AlertService {
                 store.setActiveAlert(null);
                 webhookDeliveryService.deliverAlertResolved(activeAlert);
             } else {
-                // failed_proxy_ids stays frozen at fire time; only live counters are updated.
+                // Still breaching — update live metrics (rate, count) on the active alert.
+                // failed_proxy_ids is NOT updated: it remains frozen as the fire-time snapshot.
                 activeAlert.updateActiveState(failureRate, downCount);
             }
         }

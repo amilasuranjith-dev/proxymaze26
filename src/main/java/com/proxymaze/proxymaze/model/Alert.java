@@ -14,17 +14,19 @@ public class Alert {
     @JsonProperty("status")
     private volatile String status;
 
+    // Live failure_rate — updated on each cycle while the alert is active
     @JsonProperty("failure_rate")
     private volatile double failureRate;
 
     @JsonProperty("total_proxies")
     private final int totalProxies;
 
+    // Live count of currently-down proxies — updated on each cycle while active
     @JsonProperty("failed_proxies")
     private volatile int failedProxies;
 
-    // Immutable snapshot of the proxy IDs that were down at the moment of firing.
-    // Per spec this list must never change for the lifetime of the alert.
+    // IMMUTABLE fire-time snapshot — never mutated after construction.
+    // Per spec: "the exact set of failed_proxy_ids that were down at the time of firing."
     @JsonProperty("failed_proxy_ids")
     private final List<String> failedProxyIds;
 
@@ -47,18 +49,27 @@ public class Alert {
         this.failureRate = failureRate;
         this.totalProxies = totalProxies;
         this.failedProxies = failedProxies;
+        // Defensive immutable copy — this list is NEVER changed after this point
         this.failedProxyIds = Collections.unmodifiableList(List.copyOf(failedProxyIds));
         this.firedAt = firedAt;
         this.resolvedAt = null;
         this.message = buildMessage(failedProxies, totalProxies, failureRate);
     }
 
+    /**
+     * Updates live metrics (failure_rate, failed_proxies) for the duration of an
+     * ongoing breach, so GET /proxies and GET /alerts show current health.
+     * <p>
+     * failed_proxy_ids is intentionally NOT updated here — the spec mandates it
+     * must represent the exact set of proxies that were down at the time of firing.
+     */
     public synchronized void updateActiveState(double newRate, int failed) {
         this.failureRate = newRate;
         this.failedProxies = failed;
         this.message = buildMessage(failed, this.totalProxies, newRate);
     }
 
+    /** Resolve the alert when failure rate drops below threshold. */
     public synchronized void resolve(Instant resolvedAt) {
         this.status = "resolved";
         this.resolvedAt = resolvedAt;
