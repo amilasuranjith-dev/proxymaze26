@@ -26,22 +26,15 @@ public class MonitoringService {
     private final DataStore store;
     private final AlertService alertService;
 
-    // Single-threaded scheduler controls the monitoring loop
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
-
-    // Thread pool for parallel proxy probes
     private final ExecutorService probePool = Executors.newCachedThreadPool();
-
-    // Keeps reference to the current scheduled task so we can cancel it on
-    // reschedule
     private volatile ScheduledFuture<?> currentTask;
     private final AtomicBoolean cycleRunning = new AtomicBoolean(false);
     private final AtomicBoolean immediateCheckQueued = new AtomicBoolean(false);
     private final AtomicLong cycleCounter = new AtomicLong(0);
 
-    // Connect timeout is kept short so the per-request timeout governs total probe duration.
     private final HttpClient httpClient = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(30))
+            .connectTimeout(Duration.ofMillis(500))
             .followRedirects(HttpClient.Redirect.NEVER)
             .build();
 
@@ -58,13 +51,11 @@ public class MonitoringService {
 
     @PreDestroy
     public void stop() {
-        if (currentTask != null)
-            currentTask.cancel(false);
+        if (currentTask != null) currentTask.cancel(false);
         scheduler.shutdown();
         probePool.shutdown();
     }
 
-    // Cancels the current loop and starts a new one with the new interval.
     public synchronized void reschedule(int intervalSeconds) {
         if (currentTask != null && !currentTask.isDone()) {
             currentTask.cancel(false);
@@ -76,12 +67,10 @@ public class MonitoringService {
                 TimeUnit.SECONDS);
     }
 
-    // Trigger an immediate check cycle (used when new proxies are added).
     public void triggerImmediateCheck() {
         requestImmediateCheck();
     }
 
-    // Trigger an immediate check cycle and wait for at least one cycle to finish.
     public boolean triggerImmediateCheckAndWait() {
         int timeoutMs = store.getConfig().getRequestTimeoutMs();
         int proxyCount = Math.max(1, store.getPoolSize());
@@ -89,10 +78,7 @@ public class MonitoringService {
         return triggerImmediateCheckAndWait(Duration.ofMillis(maxWaitMs));
     }
 
-    // One complete monitoring pass: probe all proxies, then evaluate alerts.
     private void runCheckCycle() {
-        // cycleRunning guards against a race between the scheduled loop and
-        // triggerImmediateCheck() submitting a concurrent invocation.
         if (!cycleRunning.compareAndSet(false, true)) {
             return;
         }
@@ -166,7 +152,7 @@ public class MonitoringService {
 
             HttpResponse<Void> response = httpClient.send(
                     request,
-                    HttpResponse.BodyHandlers.discarding() // don't read body, save memory
+                    HttpResponse.BodyHandlers.discarding()
             );
 
             int code = response.statusCode();
