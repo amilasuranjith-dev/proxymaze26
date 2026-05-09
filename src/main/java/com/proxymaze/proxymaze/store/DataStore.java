@@ -7,38 +7,25 @@ import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
+import java.util.UUID;
 
-//Central in memory data store for all application state.
-//All services read/write through this component.
 @Component
 public class DataStore {
 
-    // ---- Config ----
     private final MonitoringConfigData config = new MonitoringConfigData();
 
-    // ---- Proxy Pool (ID -> ProxyEntry) ----
-    // LinkedHashMap wrapped in synchronized map to maintain insertion order
     private final Map<String, ProxyEntry> proxyPool =
         Collections.synchronizedMap(new LinkedHashMap<>());
 
-    // ---- Alerts ----
     private final List<Alert> alerts = new CopyOnWriteArrayList<>();
     private volatile Alert activeAlert = null;
 
-    // ---- Webhooks ----
     private final List<WebhookRegistration> webhooks = new CopyOnWriteArrayList<>();
-
-    // ---- Integrations ----
     private final List<Integration> integrations = new CopyOnWriteArrayList<>();
 
-    // ---- Metrics ----
-    private final AtomicLong totalChecks        = new AtomicLong(0);
-    private final AtomicLong totalAlerts        = new AtomicLong(0);
-    private final AtomicLong webhookDeliveries  = new AtomicLong(0);
-
-    // ---------------------------------------------------------------
-    // Config
-    // ---------------------------------------------------------------
+    private final AtomicLong totalChecks       = new AtomicLong(0);
+    private final AtomicLong totalAlerts       = new AtomicLong(0);
+    private final AtomicLong webhookDeliveries = new AtomicLong(0);
 
     public MonitoringConfigData getConfig() { return config; }
 
@@ -47,16 +34,9 @@ public class DataStore {
         config.setRequestTimeoutMs(timeoutMs);
     }
 
-    // ---------------------------------------------------------------
-    // Proxy Pool
-    // ---------------------------------------------------------------
-
-    //Extract proxy ID from URL.
-    //https://proxy-provider.example/proxy/px-101" → "px-101"
+    // Derives a stable proxy ID from the last path segment of the URL.
     public static String extractId(String url) {
-        if (url == null || url.isBlank()) {
-            return "";
-        }
+        if (url == null || url.isBlank()) return "";
         String trimmed = url.trim();
         while (trimmed.endsWith("/")) {
             trimmed = trimmed.substring(0, trimmed.length() - 1);
@@ -67,12 +47,8 @@ public class DataStore {
 
     public List<ProxyEntry> addProxies(List<String> urls, boolean replace) {
         synchronized (proxyPool) {
-            if (replace) {
-                proxyPool.clear();
-            }
-            if (urls == null) {
-                return List.of();
-            }
+            if (replace) proxyPool.clear();
+            if (urls == null) return List.of();
             List<ProxyEntry> added = new ArrayList<>();
             for (String url : urls) {
                 String id = extractId(url);
@@ -85,28 +61,18 @@ public class DataStore {
     }
 
     public void clearPool() {
-        synchronized (proxyPool) {
-            proxyPool.clear();
-        }
+        synchronized (proxyPool) { proxyPool.clear(); }
     }
 
     public List<ProxyEntry> getAllProxies() {
-        synchronized (proxyPool) {
-            return new ArrayList<>(proxyPool.values());
-        }
+        synchronized (proxyPool) { return new ArrayList<>(proxyPool.values()); }
     }
 
     public Optional<ProxyEntry> getProxy(String id) {
         return Optional.ofNullable(proxyPool.get(id));
     }
 
-    public int getPoolSize() {
-        return proxyPool.size();
-    }
-
-    // ---------------------------------------------------------------
-    // Failure Rate Calculation
-    // ---------------------------------------------------------------
+    public int getPoolSize() { return proxyPool.size(); }
 
     public double calculateFailureRate() {
         synchronized (proxyPool) {
@@ -136,12 +102,7 @@ public class DataStore {
         }
     }
 
-    // ---------------------------------------------------------------
-    // Alerts
-    // ---------------------------------------------------------------
-
     public Alert getActiveAlert() { return activeAlert; }
-
     public void setActiveAlert(Alert alert) { this.activeAlert = alert; }
 
     public void addAlert(Alert alert) {
@@ -149,37 +110,13 @@ public class DataStore {
         totalAlerts.incrementAndGet();
     }
 
-    public List<Alert> getAllAlerts() {
-        return new ArrayList<>(alerts);
-    }
+    public List<Alert> getAllAlerts() { return new ArrayList<>(alerts); }
 
-    // ---------------------------------------------------------------
-    // Webhooks
-    // ---------------------------------------------------------------
+    public void addWebhook(WebhookRegistration wh) { webhooks.add(wh); }
+    public List<WebhookRegistration> getAllWebhooks() { return new ArrayList<>(webhooks); }
 
-    public void addWebhook(WebhookRegistration wh) {
-        webhooks.add(wh);
-    }
-
-    public List<WebhookRegistration> getAllWebhooks() {
-        return new ArrayList<>(webhooks);
-    }
-
-    // ---------------------------------------------------------------
-    // Integrations
-    // ---------------------------------------------------------------
-
-    public void addIntegration(Integration integration) {
-        integrations.add(integration);
-    }
-
-    public List<Integration> getAllIntegrations() {
-        return new ArrayList<>(integrations);
-    }
-
-    // ---------------------------------------------------------------
-    // Metrics
-    // ---------------------------------------------------------------
+    public void addIntegration(Integration integration) { integrations.add(integration); }
+    public List<Integration> getAllIntegrations() { return new ArrayList<>(integrations); }
 
     public void incrementTotalChecks()       { totalChecks.incrementAndGet(); }
     public void incrementWebhookDeliveries() { webhookDeliveries.incrementAndGet(); }
@@ -188,5 +125,7 @@ public class DataStore {
     public long getTotalAlerts()       { return totalAlerts.get(); }
     public long getWebhookDeliveries() { return webhookDeliveries.get(); }
     public int getActiveAlertsCount()  { return activeAlert != null ? 1 : 0; }
+    public String nextAlertId() {
+        return "alert-" + UUID.randomUUID().toString().substring(0, 8);
+    }
 }
-

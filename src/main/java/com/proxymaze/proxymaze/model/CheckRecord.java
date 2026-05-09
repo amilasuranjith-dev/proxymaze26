@@ -14,6 +14,6 @@ public class CheckRecord {
     private Instant checkedAt;
 
     @JsonProperty("status")
-    private String status; // "up" or "down" or "pending"
+    private String status;
 }
 

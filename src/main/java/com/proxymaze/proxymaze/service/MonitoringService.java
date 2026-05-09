@@ -17,6 +17,8 @@ import java.time.Instant;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 @Service
 public class MonitoringService {
@@ -33,8 +35,11 @@ public class MonitoringService {
     // Keeps reference to the current scheduled task so we can cancel it on
     // reschedule
     private volatile ScheduledFuture<?> currentTask;
+    private final AtomicBoolean cycleRunning = new AtomicBoolean(false);
+    private final AtomicBoolean immediateCheckQueued = new AtomicBoolean(false);
+    private final AtomicLong cycleCounter = new AtomicLong(0);
 
-    // HttpClient - created once, used for all probes
+    // Connect timeout is kept short so the per-request timeout governs total probe duration.
     private final HttpClient httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(30))
             .followRedirects(HttpClient.Redirect.NEVER)
@@ -48,7 +53,6 @@ public class MonitoringService {
 
     @PostConstruct
     public void start() {
-        // Start the monitoring loop with default config on startup
         reschedule(store.getConfig().getCheckIntervalSeconds());
     }
 
@@ -63,22 +67,35 @@ public class MonitoringService {
     // Cancels the current loop and starts a new one with the new interval.
     public synchronized void reschedule(int intervalSeconds) {
         if (currentTask != null && !currentTask.isDone()) {
-            currentTask.cancel(false); // don't interrupt if running
+            currentTask.cancel(false);
         }
-        currentTask = scheduler.scheduleAtFixedRate(
+        currentTask = scheduler.scheduleWithFixedDelay(
                 this::runCheckCycle,
-                0, // start immediately
+                0,
                 intervalSeconds,
                 TimeUnit.SECONDS);
     }
 
     // Trigger an immediate check cycle (used when new proxies are added).
     public void triggerImmediateCheck() {
-        probePool.submit(this::runCheckCycle);
+        requestImmediateCheck();
+    }
+
+    // Trigger an immediate check cycle and wait for at least one cycle to finish.
+    public boolean triggerImmediateCheckAndWait() {
+        int timeoutMs = store.getConfig().getRequestTimeoutMs();
+        int proxyCount = Math.max(1, store.getPoolSize());
+        long maxWaitMs = Math.max(1000L, (long) timeoutMs * proxyCount + 500L);
+        return triggerImmediateCheckAndWait(Duration.ofMillis(maxWaitMs));
     }
 
     // One complete monitoring pass: probe all proxies, then evaluate alerts.
     private void runCheckCycle() {
+        // cycleRunning guards against a race between the scheduled loop and
+        // triggerImmediateCheck() submitting a concurrent invocation.
+        if (!cycleRunning.compareAndSet(false, true)) {
+            return;
+        }
         try {
             MonitoringConfigData config = store.getConfig();
             List<ProxyEntry> proxies = store.getAllProxies();
@@ -88,38 +105,57 @@ public class MonitoringService {
                 return;
             }
 
-            // Probe all proxies in parallel
+            int timeoutMs = config.getRequestTimeoutMs();
             List<CompletableFuture<Void>> futures = new ArrayList<>();
             for (ProxyEntry proxy : proxies) {
                 futures.add(CompletableFuture.runAsync(() -> {
-                    String result = probeProxy(proxy.getUrl(), config.getRequestTimeoutMs());
+                    String result = probeProxy(proxy.getUrl(), timeoutMs);
                     proxy.recordCheck(result, Instant.now());
                     store.incrementTotalChecks();
                 }, probePool));
             }
 
-            // Wait for ALL probes to finish before evaluating alerts
             CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-
-            // Evaluate alerts after all probes are done
             alertService.evaluate();
 
         } catch (Exception e) {
-            // Never let a crash kill the monitoring loop
             System.err.println("MonitoringService cycle error: " + e.getMessage());
             e.printStackTrace();
+        } finally {
+            cycleCounter.incrementAndGet();
+            cycleRunning.set(false);
+            if (immediateCheckQueued.getAndSet(false)) {
+                probePool.submit(this::runCheckCycle);
+            }
         }
     }
 
-    /**
-     * Makes a real HTTP GET request to the proxy URL.
-     * Returns "up" if 2xx received within timeout, "down" otherwise.
-     *
-     * - 2xx within timeout_ms → "up"
-     * - Timeout, connection refused, any error → "down"
-     * - 5xx response → "down"
-     * - Any other non-2xx → "down"
-     */
+    private void requestImmediateCheck() {
+        if (cycleRunning.get()) {
+            immediateCheckQueued.set(true);
+            return;
+        }
+        probePool.submit(this::runCheckCycle);
+    }
+
+    private boolean triggerImmediateCheckAndWait(Duration timeout) {
+        long target = cycleCounter.get() + 1;
+        requestImmediateCheck();
+        long deadline = System.nanoTime() + timeout.toNanos();
+        while (System.nanoTime() < deadline) {
+            if (cycleCounter.get() >= target) {
+                return true;
+            }
+            try {
+                Thread.sleep(25);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        return cycleCounter.get() >= target;
+    }
+
     private String probeProxy(String url, int timeoutMs) {
         try {
             HttpRequest request = HttpRequest.newBuilder()
@@ -134,14 +170,9 @@ public class MonitoringService {
             );
 
             int code = response.statusCode();
-            if (code >= 200 && code < 300) {
-                return "up";
-            } else {
-                return "down"; // 5xx, 4xx, 3xx — only 2xx = up
-            }
+            return (code >= 200 && code < 300) ? "up" : "down";
 
         } catch (Exception e) {
-            // HttpTimeoutException, ConnectException, IOException, etc.
             return "down";
         }
     }

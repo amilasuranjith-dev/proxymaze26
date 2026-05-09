@@ -16,7 +16,7 @@ public class Integration {
     private String integrationId;
 
     @JsonProperty("type")
-    private String type;          // "slack" or "discord"
+    private String type;
 
     @JsonProperty("webhook_url")
     private String webhookUrl;

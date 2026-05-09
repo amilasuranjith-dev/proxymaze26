@@ -41,8 +41,7 @@ public class AlertController {
         msg.put("failed_proxy_ids", alert.getFailedProxyIds());
         msg.put("threshold", alert.getThreshold());
         msg.put("fired_at", formatInstant(alert.getFiredAt()));
-        msg.put("resolved_at", alert.getResolvedAt() != null
-            ? formatInstant(alert.getResolvedAt()) : null);
+        msg.put("resolved_at", alert.getResolvedAt() != null ? formatInstant(alert.getResolvedAt()) : null);
         msg.put("message", alert.getMessage());
         return msg;
     }

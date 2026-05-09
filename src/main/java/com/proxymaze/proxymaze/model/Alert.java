@@ -12,7 +12,7 @@ public class Alert {
     private final String alertId;
 
     @JsonProperty("status")
-    private volatile String status;   // "active" or "resolved"
+    private volatile String status;
 
     // Live failure_rate — updated on each cycle while the alert is active
     @JsonProperty("failure_rate")
@@ -76,8 +76,7 @@ public class Alert {
     }
 
     private String buildMessage(int failed, int total, double rate) {
-        double pct = rate * 100.0;
         return String.format("Proxy pool failure rate exceeded threshold: %d/%d down (%.1f%%)",
-            failed, total, pct);
+            failed, total, rate * 100.0);
     }
 }

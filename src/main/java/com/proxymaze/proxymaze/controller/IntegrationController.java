@@ -22,8 +22,6 @@ public class IntegrationController {
         this.store = store;
     }
 
-    //POST /integrations — Register a Slack or Discord integration.
-    // Response: 200 OK or 201 Created (use 201)
     @PostMapping("/integrations")
     public ResponseEntity<Map<String, Object>> registerIntegration(
             @RequestBody IntegrationRequest request) {

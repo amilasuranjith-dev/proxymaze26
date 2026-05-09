@@ -18,7 +18,6 @@ public class MetricsController {
         this.store = store;
     }
 
-    //GET /metrics — Operational stats.
     @GetMapping("/metrics")
     public ResponseEntity<Map<String, Object>> getMetrics() {
         Map<String, Object> body = new LinkedHashMap<>();
@@ -30,4 +29,3 @@ public class MetricsController {
         return ResponseEntity.ok(body);
     }
 }
-
