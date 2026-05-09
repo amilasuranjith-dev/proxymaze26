@@ -1,33 +1,125 @@
-HELP.md
+# ProxyMaze '26 - Spring Boot (Maven) + IntelliJ IDEA (Windows)
+#
+# Notes:
+# - Keep the Maven wrapper JAR (required to run ./mvnw)
+# - Ignore build outputs, IDE metadata, and OS junk
+
+############################
+# Build outputs
+############################
 target/
-.mvn/wrapper/maven-wrapper.jar
-!**/src/main/**/target/
-!**/src/test/**/target/
+**/target/
 
-### STS ###
-.apt_generated
-.classpath
-.factorypath
-.project
-.settings
-.springBeans
-.sts4-cache
+build/
+**/build/
 
-### IntelliJ IDEA ###
-.idea
-*.iws
+out/
+**/out/
+
+############################
+# Logs & runtime files
+############################
+*.log
+logs/
+*.pid
+*.seed
+*.tmp
+
+############################
+# Maven wrapper
+############################
+# Keep wrapper JAR so builds work without local Maven
+!.mvn/wrapper/maven-wrapper.jar
+
+############################
+# IntelliJ IDEA
+############################
+.idea/
 *.iml
+*.iws
 *.ipr
 
-### NetBeans ###
+# IntelliJ build caches
+/.idea/**/workspace.xml
+/.idea/**/tasks.xml
+/.idea/**/usage.statistics.xml
+/.idea/**/shelf/
+/.idea/**/httpRequests/
+/.idea/**/dataSources/
+/.idea/**/dataSources.local.xml
+
+############################
+# Eclipse / STS
+############################
+.classpath
+.project
+.settings/
+.apt_generated/
+.factorypath
+.springBeans
+.sts4-cache/
+
+############################
+# VS Code
+############################
+.vscode/
+
+############################
+# NetBeans
+############################
 /nbproject/private/
 /nbbuild/
 /dist/
 /nbdist/
 /.nb-gradle/
-build/
-!**/src/main/**/build/
-!**/src/test/**/build/
 
-### VS Code ###
-.vscode/
+############################
+# OS-generated files (Windows/macOS/Linux)
+############################
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux
+*~
+
+############################
+# Java
+############################
+*.class
+*.jar
+*.war
+*.ear
+*.nar
+hs_err_pid*
+replay_pid*
+
+############################
+# Lombok
+############################
+# (Generated config; safe to ignore if present)
+.lombok/
+
+############################
+# Misc
+############################
+# Local env files
+.env
+.env.*
+
+# JetBrains Rider/Resharper style (harmless if unused)
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Keep source-controlled docs
+!HELP.md
