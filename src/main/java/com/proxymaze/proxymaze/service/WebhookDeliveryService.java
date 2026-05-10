@@ -19,6 +19,18 @@ import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.*;
 
+/**
+ * Asynchronous webhook delivery engine with retry.
+ *
+ * Design:
+ * - Payloads are built as IMMUTABLE snapshots at event time (no live references)
+ * - Per-receiver single-thread executor preserves event ordering
+ * - Retries use exponential backoff: 1s, 2s, 4s, 8s, 16s (capped at 30s)
+ * - Retry only on 5xx and network/timeout errors
+ * - No retry on 4xx (permanent failure)
+ * - Idempotency via deliveredKeys set prevents duplicate successful deliveries
+ * - 60-second delivery deadline per event
+ */
 @Service
 public class WebhookDeliveryService {
 
@@ -27,7 +39,11 @@ public class WebhookDeliveryService {
 
     private final DataStore store;
     private final ObjectMapper objectMapper;
-    private final ScheduledExecutorService retryScheduler = Executors.newSingleThreadScheduledExecutor();
+    private final ScheduledExecutorService retryScheduler = Executors.newScheduledThreadPool(2, r -> {
+        Thread t = new Thread(r, "webhook-retry");
+        t.setDaemon(true);
+        return t;
+    });
     private final Map<String, ExecutorService> receiverExecutors = new ConcurrentHashMap<>();
 
     private final HttpClient httpClient = HttpClient.newBuilder()
@@ -91,6 +107,7 @@ public class WebhookDeliveryService {
     }
 
     private void enqueueDelivery(String receiverKey, String url, Map<String, Object> payload, String deliveryKey) {
+        if (deliveredKeys.contains(deliveryKey)) return;
         Instant start = Instant.now();
         getReceiverExecutor(receiverKey).submit(() -> deliverWithRetry(url, payload, deliveryKey, start, 0));
     }
@@ -112,24 +129,31 @@ public class WebhookDeliveryService {
             int code = response.statusCode();
 
             if (code >= 200 && code < 300) {
+                // Success — mark as delivered, no more retries
                 deliveredKeys.add(deliveryKey);
                 store.incrementWebhookDeliveries();
             } else if (code >= 500) {
+                // Server error — retryable
                 scheduleRetry(url, payload, deliveryKey, start, attempt);
             }
-            // 4xx = permanent failure, do not retry
+            // 4xx = permanent failure, do not retry (silently drop)
 
         } catch (Exception e) {
+            // Network error, timeout, connection refused — retryable
             scheduleRetry(url, payload, deliveryKey, start, attempt);
         }
     }
 
     private void scheduleRetry(String url, Map<String, Object> payload, String deliveryKey, Instant start, int attempt) {
+        if (deliveredKeys.contains(deliveryKey)) return;
+
         long elapsedSeconds = Duration.between(start, Instant.now()).getSeconds();
         long remainingSeconds = DELIVERY_DEADLINE_SECONDS - elapsedSeconds;
         if (remainingSeconds <= 0) return;
 
-        long delaySeconds = Math.min(2L * (long) Math.pow(2, attempt), 30L);
+        // Exponential backoff: 1s, 2s, 4s, 8s, 16s, capped at 30s
+        long delayMs = Math.min((long) Math.pow(2, attempt) * 1000L, 30_000L);
+        long delaySeconds = Math.max(1, delayMs / 1000);
         delaySeconds = Math.min(delaySeconds, remainingSeconds);
         if (delaySeconds <= 0) return;
 
@@ -145,15 +169,22 @@ public class WebhookDeliveryService {
     }
 
     private ExecutorService getReceiverExecutor(String receiverKey) {
-        return receiverExecutors.computeIfAbsent(receiverKey, key -> Executors.newSingleThreadExecutor());
+        return receiverExecutors.computeIfAbsent(receiverKey, key -> Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "webhook-" + key);
+            t.setDaemon(true);
+            return t;
+        }));
     }
 
-    // Snapshot all values at build time — the payload map must not hold live references
-    // to mutable Alert state, because JSON serialization happens asynchronously.
+    // ============================================================
+    // Payload builders — snapshot ALL values eagerly at build time
+    // ============================================================
+
     private Map<String, Object> buildFiredPayload(Alert alert) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("event", "alert.fired");
         payload.put("alert_id", alert.getAlertId());
+        payload.put("status", "active");
         payload.put("fired_at", formatInstant(alert.getFiredAt()));
         payload.put("failure_rate", alert.getFailureRate());
         payload.put("total_proxies", alert.getTotalProxies());

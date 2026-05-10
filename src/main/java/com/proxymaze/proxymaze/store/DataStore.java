@@ -72,7 +72,31 @@ public class DataStore {
         return Optional.ofNullable(proxyPool.get(id));
     }
 
-    public int getPoolSize() { return proxyPool.size(); }
+    public int getPoolSize() {
+        synchronized (proxyPool) { return proxyPool.size(); }
+    }
+
+    /**
+     * Returns an atomic snapshot of failure metrics: {failureRate, downCount, downIds, totalProxies}.
+     * All values are computed under a single lock to guarantee consistency.
+     */
+    public FailureSnapshot getFailureSnapshot() {
+        synchronized (proxyPool) {
+            int total = proxyPool.size();
+            if (total == 0) {
+                return new FailureSnapshot(0.0, 0, List.of(), 0);
+            }
+            List<String> downIds = new ArrayList<>();
+            for (ProxyEntry p : proxyPool.values()) {
+                if ("down".equals(p.getStatus())) {
+                    downIds.add(p.getId());
+                }
+            }
+            int downCount = downIds.size();
+            double failureRate = (double) downCount / total;
+            return new FailureSnapshot(failureRate, downCount, downIds, total);
+        }
+    }
 
     public double calculateFailureRate() {
         synchronized (proxyPool) {
@@ -128,4 +152,9 @@ public class DataStore {
     public String nextAlertId() {
         return "alert-" + UUID.randomUUID().toString().substring(0, 8);
     }
+
+    /**
+     * Immutable snapshot of failure metrics for atomic consistency.
+     */
+    public record FailureSnapshot(double failureRate, int downCount, List<String> downIds, int totalProxies) {}
 }
