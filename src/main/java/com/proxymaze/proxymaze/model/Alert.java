@@ -19,7 +19,7 @@ public class Alert {
     private volatile double failureRate;
 
     @JsonProperty("total_proxies")
-    private final int totalProxies;
+    private volatile int totalProxies;
 
     // Live count of currently-down proxies — updated on each cycle while active
     @JsonProperty("failed_proxies")
@@ -55,11 +55,12 @@ public class Alert {
         this.message = buildMessage(failedProxies, totalProxies, failureRate);
     }
 
-    public synchronized void updateActiveState(double newRate, int failed, List<String> failedIds) {
+    public synchronized void updateActiveState(double newRate, int total, int failed, List<String> failedIds) {
         this.failureRate = newRate;
+        this.totalProxies = total;
         this.failedProxies = failed;
         this.failedProxyIds = new ArrayList<>(failedIds);
-        this.message = buildMessage(failed, this.totalProxies, newRate);
+        this.message = buildMessage(failed, total, newRate);
     }
 
     /** Resolve the alert when failure rate drops below threshold. */

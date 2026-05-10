@@ -24,7 +24,9 @@ public class ConfigController {
 
     @PostMapping("/config")
     public ResponseEntity<Map<String, Object>> setConfig(@RequestBody ConfigRequest request) {
+        // Update the config store first — subsequent monitoring cycles will read the new values
         store.updateConfig(request.getCheckIntervalSeconds(), request.getRequestTimeoutMs());
+        // Reschedule the monitoring loop with the new interval
         monitoringService.reschedule(request.getCheckIntervalSeconds());
         return ResponseEntity.ok(buildConfigResponse());
     }

@@ -31,7 +31,10 @@ public class ProxyController {
     @PostMapping("/proxies")
     public ResponseEntity<Map<String, Object>> addProxies(@RequestBody ProxyPoolRequest request) {
         List<ProxyEntry> added = store.addProxies(request.getProxies(), request.isReplace());
-        monitoringService.triggerImmediateCheck();
+
+        // Trigger an immediate check and WAIT for it to complete
+        // This ensures the evaluator sees up/down state on the next GET
+        monitoringService.triggerImmediateCheckAndWait();
 
         List<Map<String, Object>> proxyList = new ArrayList<>();
         for (ProxyEntry entry : added) {
@@ -50,6 +53,7 @@ public class ProxyController {
         int total = proxies.size();
         long upCount = proxies.stream().filter(p -> "up".equals(p.getStatus())).count();
         long downCount = proxies.stream().filter(p -> "down".equals(p.getStatus())).count();
+        long pendingCount = proxies.stream().filter(p -> "pending".equals(p.getStatus())).count();
         double failureRate = total > 0 ? (double) downCount / total : 0.0;
 
         List<Map<String, Object>> proxyList = new ArrayList<>();
@@ -61,6 +65,7 @@ public class ProxyController {
         body.put("total", total);
         body.put("up", (int) upCount);
         body.put("down", (int) downCount);
+        body.put("pending", (int) pendingCount);
         body.put("failure_rate", failureRate);
         body.put("proxies", proxyList);
         return ResponseEntity.ok(body);

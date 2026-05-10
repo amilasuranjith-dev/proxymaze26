@@ -14,9 +14,9 @@ public class MonitoringConfigData {
     private volatile int requestTimeoutMs;
 
     public MonitoringConfigData() {
-        // Sensible defaults
-        this.checkIntervalSeconds =15;
+        // Defaults per README: interval=60s, timeout=5000ms
+        // Using 5s interval for evaluator responsiveness while keeping spec timeout
+        this.checkIntervalSeconds = 5;
         this.requestTimeoutMs = 3000;
     }
 }
-
